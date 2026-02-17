@@ -1,4 +1,56 @@
-openai_api_key = "sk-proj-xxx"       # 必填：OpenAI API Key
-openai_model = "gpt-4o"              # 可选：模型名称（默认 gpt-4o）
+# 基础配置
 lockfile_dir = ""                     # 可选：手动指定 LoL lockfile 所在目录
-region = ""                           # 可选：OP.GG 地区（默认自动检测）
+region = ""                           # 可选：OP.GG 地区（默认 jp）
+
+# ===== 方式一：简单配置（单个 OpenAI 引擎）=====
+# openai_api_key = "sk-proj-xxx"
+# openai_model = "gpt-5.2"
+
+# ===== 方式二：多引擎配置（推荐）=====
+# 可配置多个 AI 引擎，在界面中用下拉列表切换
+# 每个引擎可配置多个模型（models 数组），在界面中选择
+# 所有引擎使用 OpenAI 兼容接口格式
+
+# --- OpenAI ---
+[[ai_engines]]
+name = "OpenAI"
+api_url = "https://api.openai.com/v1/chat/completions"
+api_key = "sk-proj-xxx"
+models = ["gpt-5.2", "gpt-5.2-pro", "gpt-5-mini", "gpt-5-nano", "o4-mini", "gpt-4o"]
+
+# --- DeepSeek ---
+[[ai_engines]]
+name = "DeepSeek"
+api_url = "https://api.deepseek.com/chat/completions"
+api_key = "sk-xxx"
+models = ["deepseek-chat", "deepseek-reasoner"]
+
+# --- Google Gemini（OpenAI 兼容接口）---
+[[ai_engines]]
+name = "Gemini"
+api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+api_key = "AIzaSy-xxx"
+models = ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
+
+# --- Anthropic Claude（OpenAI 兼容接口）---
+[[ai_engines]]
+name = "Claude"
+api_url = "https://api.anthropic.com/v1/chat/completions"
+api_key = "sk-ant-xxx"
+models = ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-6"]
+
+# --- 阿里通义千问 Qwen（DashScope OpenAI 兼容接口）---
+# 国内用户使用 dashscope.aliyuncs.com
+# 海外用户使用 dashscope-intl.aliyuncs.com
+[[ai_engines]]
+name = "通义千问"
+api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+api_key = "sk-xxx"
+models = ["qwen-max", "qwen-plus", "qwen-turbo"]
+
+# --- 本地 Ollama（也支持单模型写法，向后兼容）---
+# [[ai_engines]]
+# name = "本地 Ollama"
+# api_url = "http://localhost:11434/v1/chat/completions"
+# api_key = "ollama"
+# model = "qwen2.5:14b"

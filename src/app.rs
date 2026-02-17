@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::{AiEngine, AppConfig};
 use crate::lcu::{self, LcuState};
 use crate::opgg;
 use crate::openai;
@@ -37,13 +37,12 @@ enum BgMsg {
     UpdateProgress(usize, usize, String),
     /// 全量更新完成
     UpdateDone(Result<OpggCache, String>),
-    /// AI 分析结果
-    AiResult {
-        cache_key: String,
-        my_champ: String,
-        enemy_champ: String,
-        result: String,
-    },
+    /// AI 流式片段
+    AiChunk(String),
+    /// AI 流式结束（完整文本用于缓存）
+    AiDone { cache_key: String, full_text: String },
+    /// AI 错误
+    AiError(String),
     /// 对局历史（OP.GG）
     MatchHistory {
         cache_key: String,
@@ -71,8 +70,6 @@ pub struct App {
     // 选项
     topmost: bool,
     autodock: bool,
-    follow_minimize: bool,
-    hidden_by_client: bool,
     show_debug: bool,
 
     // 敌方选中
@@ -105,6 +102,10 @@ pub struct App {
     ai_text: String,
     ai_cache: HashMap<String, String>,
     ai_loading: bool,
+    ai_engines: Vec<AiEngine>,
+    ai_engine_idx: usize,
+    ai_model_idx: usize,
+    ai_cache_key: String,
 
     // LCU poller 是否已启动
     lcu_started: bool,
@@ -161,6 +162,7 @@ impl App {
         // 加载本地缓存
         let opgg_cache = opgg::load_local_data();
         let counter_favorites = load_favorites();
+        let ai_engines = config.get_engines();
 
         Self {
             config,
@@ -176,8 +178,6 @@ impl App {
             last_update_time: "N/A".to_string(),
             topmost: true,
             autodock: true,
-            follow_minimize: true,
-            hidden_by_client: false,
             show_debug: false,
             selected_enemy_idx: None,
             debug_slug: "ahri".to_string(),
@@ -209,6 +209,10 @@ impl App {
             ai_text: String::new(),
             ai_cache: HashMap::new(),
             ai_loading: false,
+            ai_engines,
+            ai_engine_idx: 0,
+            ai_model_idx: 0,
+            ai_cache_key: String::new(),
             lcu_started: false,
             debug_lol_win: String::new(),
             icon_textures: HashMap::new(),
@@ -321,22 +325,16 @@ impl App {
                         }
                     }
                 }
-                BgMsg::AiResult {
-                    cache_key,
-                    my_champ,
-                    enemy_champ,
-                    result,
-                } => {
+                BgMsg::AiChunk(chunk) => {
+                    self.ai_text.push_str(&chunk);
+                }
+                BgMsg::AiDone { cache_key, full_text } => {
                     self.ai_loading = false;
-                    self.ai_title = format!("AI 分析：{my_champ} vs {enemy_champ}");
-                    // 缓存成功结果
-                    if !result.starts_with("错误：")
-                        && !result.starts_with("ChatGPT 请求失败")
-                        && !result.starts_with("分析失败")
-                    {
-                        self.ai_cache.insert(cache_key, result.clone());
-                    }
-                    self.ai_text = result;
+                    self.ai_cache.insert(cache_key, full_text);
+                }
+                BgMsg::AiError(err) => {
+                    self.ai_loading = false;
+                    self.ai_text.push_str(&format!("\n\n错误：{err}"));
                 }
             }
         }
@@ -437,36 +435,65 @@ impl App {
         win_rate: f64,
         ctx: &egui::Context,
     ) {
-        let cache_key = format!("{counter_name}|{enemy_name}|{position}");
+        let engine = match self.ai_engines.get(self.ai_engine_idx) {
+            Some(e) => e.clone(),
+            None => {
+                self.ai_text = "错误：未配置 AI 引擎，请在 config.toml 中设置。".into();
+                return;
+            }
+        };
+        let models = engine.get_models();
+        let model = models.get(self.ai_model_idx).or(models.first())
+            .cloned().unwrap_or_default();
+        let cache_key = format!("{counter_name}|{enemy_name}|{position}|{}|{model}", engine.name);
         if let Some(cached) = self.ai_cache.get(&cache_key) {
-            self.ai_title = format!("AI 分析：{counter_name} vs {enemy_name}（缓存）");
+            self.ai_title = "AI 分析（缓存）".into();
             self.ai_text = cached.clone();
             return;
         }
 
         self.ai_loading = true;
-        self.ai_title = format!("AI 分析：{counter_name} vs {enemy_name}（请求中…）");
-        self.ai_text = "正在请求 ChatGPT 分析，请稍候…".into();
+        self.ai_title = "AI 分析".into();
+        self.ai_text.clear();
+        self.ai_cache_key = cache_key.clone();
 
-        let config = self.config.clone();
         let tx = self.tx.clone();
-        let ctx = ctx.clone();
+        let ctx2 = ctx.clone();
         let my_champ = counter_name.to_string();
         let enemy_champ = enemy_name.to_string();
         let pos = position.to_string();
-        let ck = cache_key.clone();
+        let ck = cache_key;
 
         self.rt.spawn(async move {
-            let result =
-                openai::call_chatgpt_analysis(&config, &my_champ, &enemy_champ, &pos, win_rate)
-                    .await;
-            let _ = tx.send(BgMsg::AiResult {
-                cache_key: ck,
-                my_champ,
-                enemy_champ,
-                result,
+            let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel();
+
+            // 启动流式请求
+            let stream_ctx = ctx2.clone();
+            let stream_handle = tokio::spawn(async move {
+                openai::call_ai_stream(&engine, &model, &my_champ, &enemy_champ, &pos, win_rate, chunk_tx, stream_ctx).await;
             });
-            ctx.request_repaint();
+
+            // 转发流式消息到主 channel
+            while let Some(msg) = chunk_rx.recv().await {
+                match msg {
+                    openai::AiStreamMsg::Chunk(text) => {
+                        let _ = tx.send(BgMsg::AiChunk(text));
+                    }
+                    openai::AiStreamMsg::Done(full_text) => {
+                        let _ = tx.send(BgMsg::AiDone { cache_key: ck, full_text });
+                        ctx2.request_repaint();
+                        break;
+                    }
+                    openai::AiStreamMsg::Error(err) => {
+                        let _ = tx.send(BgMsg::AiError(err));
+                        ctx2.request_repaint();
+                        break;
+                    }
+                }
+                ctx2.request_repaint();
+            }
+
+            let _ = stream_handle.await;
         });
     }
     fn start_fetch_match_history(&mut self, game_name: &str, tag_line: &str, display_name: &str, ctx: &egui::Context) {
@@ -538,17 +565,7 @@ impl eframe::App for App {
                 lol_win.minimized, scr_x, scr_y, scr_w, scr_h,
             );
 
-            if self.follow_minimize {
-                if lol_win.minimized && !self.hidden_by_client {
-                    self.hidden_by_client = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                } else if !lol_win.minimized && self.hidden_by_client {
-                    self.hidden_by_client = false;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                }
-            }
-
-            if self.autodock && !self.hidden_by_client {
+            if self.autodock {
                 let scale = ctx.pixels_per_point();
                 // 物理像素 → 逻辑坐标
                 let x = (lol_win.right as f32 + 6.0) / scale;
@@ -559,10 +576,6 @@ impl eframe::App for App {
             }
         } else {
             self.debug_lol_win = "未找到 LOL 窗口".into();
-            if self.hidden_by_client {
-                self.hidden_by_client = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            }
         }
 
         // 置顶
@@ -604,7 +617,6 @@ impl App {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.topmost, "置顶");
             ui.checkbox(&mut self.autodock, "吸附");
-            ui.checkbox(&mut self.follow_minimize, "跟随最小化");
             let debug_label = if self.show_debug { "调试 ▲" } else { "调试 ▼" };
             if ui.small_button(debug_label).clicked() {
                 self.show_debug = !self.show_debug;
@@ -880,11 +892,53 @@ impl App {
         ui.separator();
 
         // === AI 分析面板（占满剩余空间）===
-        ui.label(&self.ai_title);
+        ui.horizontal(|ui| {
+            ui.label(&self.ai_title);
+            if self.ai_engines.len() > 1 {
+                let old_engine_idx = self.ai_engine_idx;
+                let current_name = self.ai_engines.get(self.ai_engine_idx)
+                    .map(|e| e.name.as_str()).unwrap_or("未配置");
+                egui::ComboBox::from_id_salt("ai_engine_select")
+                    .selected_text(current_name)
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for (i, engine) in self.ai_engines.iter().enumerate() {
+                            ui.selectable_value(&mut self.ai_engine_idx, i, &engine.name);
+                        }
+                    });
+                // 切换引擎时重置模型索引
+                if self.ai_engine_idx != old_engine_idx {
+                    self.ai_model_idx = 0;
+                }
+            } else if self.ai_engines.len() == 1 {
+                ui.weak(&self.ai_engines[0].name);
+            }
+            // 模型选择（当前引擎有多个模型时显示）
+            if let Some(engine) = self.ai_engines.get(self.ai_engine_idx) {
+                let models = engine.get_models();
+                if models.len() > 1 {
+                    let current_model = models.get(self.ai_model_idx)
+                        .or(models.first())
+                        .map(|s| s.as_str()).unwrap_or("?");
+                    egui::ComboBox::from_id_salt("ai_model_select")
+                        .selected_text(current_model)
+                        .width(140.0)
+                        .show_ui(ui, |ui| {
+                            for (i, m) in models.iter().enumerate() {
+                                ui.selectable_value(&mut self.ai_model_idx, i, m);
+                            }
+                        });
+                }
+            }
+            if self.ai_loading {
+                ui.spinner();
+            }
+        });
         egui::ScrollArea::vertical()
             .id_salt("ai_scroll")
             .auto_shrink(false)
             .show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if self.ai_text.is_empty() {
                     ui.label("点击上方克制英雄名称触发 AI 分析");
                 } else {

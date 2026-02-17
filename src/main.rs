@@ -19,16 +19,17 @@ fn main() {
             .expect("Failed to create tokio runtime"),
     );
 
+    let title = format!("LoL Helper v{}", env!("CARGO_PKG_VERSION"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([365.0, 900.0])
-            .with_title("LoL OP.GG 辅助"),
+            .with_title(&title),
         ..Default::default()
     };
 
     let rt_clone = rt.clone();
     eframe::run_native(
-        "LoL OP.GG 辅助",
+        &title,
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, config, rt_clone)))),
     )

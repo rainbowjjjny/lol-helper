@@ -1,8 +1,42 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+/// 单个 AI 引擎配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct AiEngine {
+    pub name: String,
+    #[serde(default = "default_api_url")]
+    pub api_url: String,
+    pub api_key: String,
+    /// 兼容旧配置：单个模型
+    #[serde(default)]
+    pub model: String,
+    /// 多模型列表
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+impl AiEngine {
+    /// 获取该引擎的模型列表（兼容 model / models 两种写法）
+    pub fn get_models(&self) -> Vec<String> {
+        if !self.models.is_empty() {
+            return self.models.clone();
+        }
+        if !self.model.is_empty() {
+            return vec![self.model.clone()];
+        }
+        vec![]
+    }
+}
+
+fn default_api_url() -> String {
+    "https://api.openai.com/v1/chat/completions".to_string()
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
+    /// 兼容旧配置
+    #[serde(default)]
     pub openai_api_key: String,
     #[serde(default = "default_model")]
     pub openai_model: String,
@@ -10,10 +44,13 @@ pub struct AppConfig {
     pub lockfile_dir: String,
     #[serde(default = "default_region")]
     pub region: String,
+    /// 多 AI 引擎列表
+    #[serde(default)]
+    pub ai_engines: Vec<AiEngine>,
 }
 
 fn default_model() -> String {
-    "gpt-5.2-chat-latest".to_string()
+    "gpt-4o".to_string()
 }
 
 fn default_region() -> String {
@@ -27,6 +64,28 @@ impl Default for AppConfig {
             openai_model: default_model(),
             lockfile_dir: String::new(),
             region: default_region(),
+            ai_engines: vec![],
+        }
+    }
+}
+
+impl AppConfig {
+    /// 获取最终的 AI 引擎列表（兼容旧配置）
+    pub fn get_engines(&self) -> Vec<AiEngine> {
+        if !self.ai_engines.is_empty() {
+            return self.ai_engines.clone();
+        }
+        // 兼容旧的 openai_api_key / openai_model 配置
+        if !self.openai_api_key.is_empty() && self.openai_api_key != "sk-proj-xxx" {
+            vec![AiEngine {
+                name: format!("OpenAI ({})", self.openai_model),
+                api_url: default_api_url(),
+                api_key: self.openai_api_key.clone(),
+                model: self.openai_model.clone(),
+                models: vec![],
+            }]
+        } else {
+            vec![]
         }
     }
 }
