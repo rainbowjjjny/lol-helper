@@ -1,0 +1,4 @@
+openai_api_key = "sk-proj-xxx"       # 必填：OpenAI API Key
+openai_model = "gpt-4o"              # 可选：模型名称（默认 gpt-4o）
+lockfile_dir = ""                     # 可选：手动指定 LoL lockfile 所在目录
+region = ""                           # 可选：OP.GG 地区（默认自动检测）

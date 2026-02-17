@@ -1,0 +1,23 @@
+# Build artifacts
+/target/
+
+# Configuration (contains API keys)
+config.toml
+
+# Local data cache
+opgg_data.json
+favorites.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code
+.claude/
