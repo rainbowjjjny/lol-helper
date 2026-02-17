@@ -55,10 +55,21 @@ pub async fn call_ai_stream(
     ctx: egui::Context,
 ) {
     let (system_prompt, user_prompt) = build_prompts(my_champ, enemy_champ, position, win_rate);
+    call_ai_raw(engine, model, &system_prompt, &user_prompt, chunk_tx, ctx).await;
+}
 
+/// 通用流式调用（自定义 system/user prompt）
+pub async fn call_ai_raw(
+    engine: &AiEngine,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    chunk_tx: mpsc::UnboundedSender<AiStreamMsg>,
+    ctx: egui::Context,
+) {
     // 先发送调试头
     let debug_header = format!(
-        "【引擎】{}\n【模型】{model}\n【System】{system_prompt}\n【Prompt】{user_prompt}\n\n────────────────\n\n",
+        "【引擎】{}\n【模型】{model}\n【Prompt】{user_prompt}\n\n────────────────\n\n",
         engine.name
     );
     let _ = chunk_tx.send(AiStreamMsg::Chunk(debug_header.clone()));
@@ -70,7 +81,7 @@ pub async fn call_ai_stream(
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_prompt }
         ],
-        "max_completion_tokens": 800,
+        "max_completion_tokens": 4096,
         "stream": true,
     });
 

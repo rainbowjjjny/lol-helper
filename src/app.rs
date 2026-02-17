@@ -106,6 +106,7 @@ pub struct App {
     ai_engine_idx: usize,
     ai_model_idx: usize,
     ai_cache_key: String,
+    ai_chat_input: String,
 
     // LCU poller 是否已启动
     lcu_started: bool,
@@ -213,6 +214,7 @@ impl App {
             ai_engine_idx: 0,
             ai_model_idx: 0,
             ai_cache_key: String::new(),
+            ai_chat_input: String::new(),
             lcu_started: false,
             debug_lol_win: String::new(),
             icon_textures: HashMap::new(),
@@ -496,6 +498,57 @@ impl App {
             let _ = stream_handle.await;
         });
     }
+    fn start_ai_chat(&mut self, user_prompt: &str, ctx: &egui::Context) {
+        let engine = match self.ai_engines.get(self.ai_engine_idx) {
+            Some(e) => e.clone(),
+            None => {
+                self.ai_text = "错误：未配置 AI 引擎，请在 config.toml 中设置。".into();
+                return;
+            }
+        };
+        let models = engine.get_models();
+        let model = models.get(self.ai_model_idx).or(models.first())
+            .cloned().unwrap_or_default();
+
+        self.ai_loading = true;
+        self.ai_title = "AI 对话".into();
+        self.ai_text.clear();
+
+        let tx = self.tx.clone();
+        let ctx2 = ctx.clone();
+        let prompt = user_prompt.to_string();
+
+        self.rt.spawn(async move {
+            let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel();
+
+            let stream_ctx = ctx2.clone();
+            let stream_handle = tokio::spawn(async move {
+                openai::call_ai_raw(&engine, &model, "你是一个有用的助手。用简洁中文回答。", &prompt, chunk_tx, stream_ctx).await;
+            });
+
+            while let Some(msg) = chunk_rx.recv().await {
+                match msg {
+                    openai::AiStreamMsg::Chunk(text) => {
+                        let _ = tx.send(BgMsg::AiChunk(text));
+                    }
+                    openai::AiStreamMsg::Done(_) => {
+                        let _ = tx.send(BgMsg::AiDone { cache_key: String::new(), full_text: String::new() });
+                        ctx2.request_repaint();
+                        break;
+                    }
+                    openai::AiStreamMsg::Error(err) => {
+                        let _ = tx.send(BgMsg::AiError(err));
+                        ctx2.request_repaint();
+                        break;
+                    }
+                }
+                ctx2.request_repaint();
+            }
+
+            let _ = stream_handle.await;
+        });
+    }
+
     fn start_fetch_match_history(&mut self, game_name: &str, tag_line: &str, display_name: &str, ctx: &egui::Context) {
         let cache_key = format!("{game_name}-{tag_line}");
         // 检查缓存
@@ -934,6 +987,26 @@ impl App {
                 ui.spinner();
             }
         });
+        // 对话输入框
+        let mut send_chat = false;
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.ai_chat_input)
+                    .hint_text("输入自定义提示词…")
+                    .desired_width(ui.available_width() - 45.0),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                send_chat = true;
+            }
+            if ui.add_enabled(!self.ai_loading && !self.ai_chat_input.trim().is_empty(), egui::Button::new("发送")).clicked() {
+                send_chat = true;
+            }
+        });
+        if send_chat && !self.ai_chat_input.trim().is_empty() && !self.ai_loading {
+            let prompt = self.ai_chat_input.clone();
+            self.ai_chat_input.clear();
+            self.start_ai_chat(&prompt, ctx);
+        }
         egui::ScrollArea::vertical()
             .id_salt("ai_scroll")
             .auto_shrink(false)
