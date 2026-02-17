@@ -107,6 +107,7 @@ pub struct App {
     ai_model_idx: usize,
     ai_cache_key: String,
     ai_chat_input: String,
+    ai_chat_visible: bool,
 
     // LCU poller 是否已启动
     lcu_started: bool,
@@ -206,7 +207,7 @@ impl App {
             counter_favorites,
             updating: false,
             update_progress_text: String::new(),
-            ai_title: "AI 对线分析（点击上方克制英雄）".into(),
+            ai_title: "AI 对线分析".into(),
             ai_text: String::new(),
             ai_cache: HashMap::new(),
             ai_loading: false,
@@ -215,6 +216,7 @@ impl App {
             ai_model_idx: 0,
             ai_cache_key: String::new(),
             ai_chat_input: String::new(),
+            ai_chat_visible: false,
             lcu_started: false,
             debug_lol_win: String::new(),
             icon_textures: HashMap::new(),
@@ -986,22 +988,28 @@ impl App {
             if self.ai_loading {
                 ui.spinner();
             }
+            let chat_label = if self.ai_chat_visible { "对话 ▲" } else { "对话 ▼" };
+            if ui.small_button(chat_label).clicked() {
+                self.ai_chat_visible = !self.ai_chat_visible;
+            }
         });
         // 对话输入框
         let mut send_chat = false;
-        ui.horizontal(|ui| {
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.ai_chat_input)
-                    .hint_text("输入自定义提示词…")
-                    .desired_width(ui.available_width() - 45.0),
-            );
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                send_chat = true;
-            }
-            if ui.add_enabled(!self.ai_loading && !self.ai_chat_input.trim().is_empty(), egui::Button::new("发送")).clicked() {
-                send_chat = true;
-            }
-        });
+        if self.ai_chat_visible {
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.ai_chat_input)
+                        .hint_text("输入自定义提示词…")
+                        .desired_width(ui.available_width() - 45.0),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    send_chat = true;
+                }
+                if ui.add_enabled(!self.ai_loading && !self.ai_chat_input.trim().is_empty(), egui::Button::new("发送")).clicked() {
+                    send_chat = true;
+                }
+            });
+        }
         if send_chat && !self.ai_chat_input.trim().is_empty() && !self.ai_loading {
             let prompt = self.ai_chat_input.clone();
             self.ai_chat_input.clear();
@@ -1013,7 +1021,7 @@ impl App {
             .show(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if self.ai_text.is_empty() {
-                    ui.label("点击上方克制英雄名称触发 AI 分析");
+                    ui.label("点击上方克制英雄触发 AI 分析");
                 } else {
                     ui.label(&self.ai_text);
                 }
